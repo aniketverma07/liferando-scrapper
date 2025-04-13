@@ -4,4 +4,4 @@ uvicorn==0.22.0
 playwright==1.25.1
 
 # Pre-compiled wheels to avoid build issues
-greenlet==1.1.2 --only-binary=:all:
+greenlet==1.1.2
