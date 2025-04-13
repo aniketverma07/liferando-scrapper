@@ -5,6 +5,7 @@ from playwright.async_api import async_playwright
 import logging
 import traceback
 import re
+import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,141 +33,120 @@ class ScrapeInput(BaseModel):
 async def root():
     return {"status": "ok", "message": "Lieferando Scraper API is running"}
 
+@app.get("/test")
+async def test():
+    """Simple test endpoint to verify the API is working correctly"""
+    return {
+        "status": "ok",
+        "message": "Test endpoint is working",
+        "timestamp": str(datetime.datetime.now())
+    }
+
 @app.post("/scrape")
 async def scrape(input: ScrapeInput):
     try:
         logger.info(f"Starting scrape for URL: {input.lieferando_url}")
         
+        # First, return a simple response to test if basic functionality works
+        # Comment this out after testing
+        # return {
+        #     "restaurant_name": input.restaurant_name,
+        #     "menu": [{"name": "Test item", "price": 9.99}],
+        #     "url": input.lieferando_url,
+        #     "item_count": 1,
+        #     "debug": "Simple test response"
+        # }
+        
         async with async_playwright() as p:
+            # Log browser launch attempt
+            logger.info("Attempting to launch browser")
             browser = await p.chromium.launch(headless=True)
+            logger.info("Browser launched successfully")
+            
+            # Create a browser context with a custom user agent
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             )
             page = await context.new_page()
             
             # Set timeout for navigation
-            page.set_default_timeout(60000)  # 60 seconds
+            page.set_default_timeout(30000)  # 30 seconds
             
-            logger.info(f"Navigating to {input.lieferando_url}")
-            response = await page.goto(input.lieferando_url, wait_until="networkidle")
-            
-            if not response or response.status >= 400:
-                status_code = response.status if response else 404
+            try:
+                logger.info(f"Navigating to {input.lieferando_url}")
+                response = await page.goto(input.lieferando_url, wait_until="domcontentloaded")
+                
+                if not response:
+                    logger.error("No response received from page")
+                    await browser.close()
+                    return {
+                        "restaurant_name": input.restaurant_name,
+                        "menu": [],
+                        "url": input.lieferando_url,
+                        "item_count": 0,
+                        "error": "No response received from page"
+                    }
+                
+                logger.info(f"Page loaded with status: {response.status}")
+                
+                # Wait a moment for JavaScript to execute
+                await page.wait_for_timeout(2000)
+                
+                # Get page title for debugging
+                title = await page.title()
+                logger.info(f"Page title: {title}")
+                
+                # Get page content for debugging
+                content = await page.content()
+                content_preview = content[:200] + "..." if len(content) > 200 else content
+                logger.info(f"Page content preview: {content_preview}")
+                
+                # Simple approach: just get the restaurant name from the title
+                name = title.split("|")
+                restaurant_name = name[0].strip() if len(name) > 0 else input.restaurant_name
+                
+                # For now, return a simplified response with debugging info
+                debug_info = {
+                    "page_title": title,
+                    "content_preview": content_preview,
+                    "response_status": response.status,
+                    "url": input.lieferando_url
+                }
+                
                 await browser.close()
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Failed to load the page. Status code: {status_code}"
-                )
-            
-            # Wait for content to load
-            await page.wait_for_load_state("domcontentloaded")
-            
-            # Try different selectors for restaurant name
-            name = None
-            name_selectors = ['h1.restaurant-name', 'h1[data-test="restaurant-header-name"]', '.restaurant-name', '.restaurant-title']
-            
-            for selector in name_selectors:
-                try:
-                    if await page.query_selector(selector):
-                        name = await page.text_content(selector)
-                        if name:
-                            logger.info(f"Found restaurant name with selector: {selector}")
-                            break
-                except Exception as e:
-                    logger.warning(f"Error with selector {selector}: {str(e)}")
-            
-            # If we couldn't find the name, use the provided one
-            if not name:
-                logger.warning("Could not find restaurant name, using provided name")
-                name = input.restaurant_name
-            
-            # Try different selectors for menu items
-            menu_selectors = ['.menu-item', '.dish-card', '.foodItem', '.meal-item']
-            menu_items = []
-            
-            for selector in menu_selectors:
-                try:
-                    items = await page.query_selector_all(selector)
-                    if items and len(items) > 0:
-                        logger.info(f"Found {len(items)} menu items with selector: {selector}")
-                        menu_items = items
-                        break
-                except Exception as e:
-                    logger.warning(f"Error with menu selector {selector}: {str(e)}")
-            
-            # Take a screenshot for debugging
-            await page.screenshot(path="screenshot.png")
-            
-            items = []
-            for item in menu_items:
-                try:
-                    # Try different selectors for item name and price
-                    name_selectors = ['.item-name', '.dish-name', '.meal-name', '.name', 'h3']
-                    price_selectors = ['.item-price', '.dish-price', '.meal-price', '.price']
-                    
-                    title = None
-                    price_text = None
-                    
-                    # Try to get the title
-                    for selector in name_selectors:
-                        try:
-                            name_element = await item.query_selector(selector)
-                            if name_element:
-                                title = await name_element.text_content()
-                                if title:
-                                    break
-                        except:
-                            continue
-                    
-                    # Try to get the price
-                    for selector in price_selectors:
-                        try:
-                            price_element = await item.query_selector(selector)
-                            if price_element:
-                                price_text = await price_element.text_content()
-                                if price_text:
-                                    break
-                        except:
-                            continue
-                    
-                    # If we found both title and price
-                    if title and price_text:
-                        # Clean up the title and price
-                        title = title.strip()
-                        
-                        # Extract price using regex to find numbers with decimal points
-                        price_match = re.search(r'\d+[.,]\d+', price_text)
-                        if price_match:
-                            price_str = price_match.group(0).replace(',', '.')
-                            try:
-                                price = float(price_str)
-                                items.append({
-                                    "name": title,
-                                    "price": price
-                                })
-                            except ValueError:
-                                logger.warning(f"Could not convert price: {price_str}")
-                except Exception as e:
-                    logger.warning(f"Error processing menu item: {str(e)}")
-            
-            await browser.close()
-            
-            logger.info(f"Scraping completed. Found {len(items)} menu items.")
-            
-            return {
-                "restaurant_name": name.strip() if name else input.restaurant_name,
-                "menu": items,
-                "url": input.lieferando_url,
-                "item_count": len(items)
-            }
+                
+                return {
+                    "restaurant_name": restaurant_name,
+                    "menu": [{"name": "Sample item", "price": 9.99}],  # Placeholder
+                    "url": input.lieferando_url,
+                    "item_count": 1,
+                    "debug": debug_info
+                }
+                
+            except Exception as e:
+                logger.error(f"Error during page navigation: {str(e)}")
+                await browser.close()
+                return {
+                    "restaurant_name": input.restaurant_name,
+                    "menu": [],
+                    "url": input.lieferando_url,
+                    "item_count": 0,
+                    "error": f"Navigation error: {str(e)}"
+                }
     
     except Exception as e:
         logger.error(f"Error during scraping: {str(e)}")
         logger.error(traceback.format_exc())
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during scraping: {str(e)}"
-        )
+        
+        # Instead of raising an exception, return an error response
+        return {
+            "restaurant_name": input.restaurant_name,
+            "menu": [],
+            "url": input.lieferando_url if hasattr(input, 'lieferando_url') else "unknown",
+            "item_count": 0,
+            "error": f"Scraping error: {str(e)}",
+            "traceback": traceback.format_exc()
+        }
 
 if __name__ == "__main__":
     import uvicorn
