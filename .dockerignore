@@ -1,0 +1,28 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+.env
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Playwright browser data
+**/node_modules/
+**/playwright-browsers/
+
+# Editor directories and files
+.idea/
+.vscode/
+*.swp
+*.swo
